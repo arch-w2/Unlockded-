@@ -1,0 +1,112 @@
+-- =============================================================================
+-- CONFIGURACIÓN DE DESBLOQUEO (Block Spin Independent)
+-- =============================================================================
+local VehicleUnlockConfig = {
+    ForceUnlockAll = true,      -- Anula de forma forzada los bloqueos de puertas de cualquier coche
+    OverrideAttributes = true,   -- Sobrescribe los metadatos locales de bloqueo de instancias
+    TargetAttributeNames = {    -- Atributos comunes de bloqueo en juegos de carros de Roblox
+        "IsLocked",
+        "Locked",
+        "OwnerLocked",
+        "toggled"
+    }
+}
+
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+
+-- =============================================================================
+-- 1. ADAPTACIÓN DE FILTROS LOCALES (Basado en el bloque original 74)
+-- =============================================================================
+-- Esta función analiza si un objeto del mapa está intentando consultar su estado de bloqueo
+local function bypassLockState(instance, attribute)
+    if not VehicleUnlockConfig.ForceUnlockAll then return nil end
+    if typeof(instance) ~= "Instance" then return nil end
+    
+    -- Si la consulta coincide con una bandera de cerrojo, forzamos la respuesta a FALSE (Desbloqueado)
+    for _, lockName in ipairs(VehicleUnlockConfig.TargetAttributeNames) do
+        if attribute == lockName then
+            return true, false -- Retorna que fue interceptado, y el nuevo valor (false)
+        end
+    end
+    return false
+end
+
+-- =============================================================================
+-- 2. GANCHO DE METATABLAS PARA HOOKEAR ATRIBUTOS (Basado en el bloque original 33)
+-- =============================================================================
+-- Este bloque altera el comportamiento del motor de Roblox (__index / GetAttribute)
+local mt = getmetatable(game)
+local oldIndex = mt.__index
+local oldNamecall = mt.__namecall
+setreadonly(mt, false)
+
+-- Hook para interceptar lecturas clásicas orientadas a métodos como :GetAttribute()
+mt.__namecall = newcstackhook(function(self, ...)
+    local method = getnamecallmethod()
+    local args = {...}
+    
+    if VehicleUnlockConfig.ForceUnlockAll and method == "GetAttribute" then
+        local attributeName = args[1]
+        local intercepted, forcedValue = bypassLockState(self, attributeName)
+        
+        if intercepted then
+            -- Engañamos al script del juego haciéndole creer que el coche está abierto
+            return forcedValue
+        end
+    end
+    
+    return oldNamecall(self, ...)
+end)
+
+-- Hook complementario para interceptar accesos directos por propiedades físicas si aplica
+mt.__index = newcstackhook(function(self, key)
+    if VehicleUnlockConfig.ForceUnlockAll and typeof(self) == "Instance" then
+        local intercepted, forcedValue = bypassLockState(self, key)
+        if intercepted then
+            return forcedValue
+        end
+    end
+    return oldIndex(self, key)
+end)
+
+setreadonly(mt, true)
+
+-- =============================================================================
+-- 3. MONITOR ACTIVO DE CERCANÍA (Fuerza Física de Apertura)
+-- =============================================================================
+-- Escáner de seguridad para forzar los atributos de los coches que estén cerca de ti
+task.spawn(function()
+    while true do
+        if VehicleUnlockConfig.ForceUnlockAll and VehicleUnlockConfig.OverrideAttributes then
+            pcall(function()
+                local character = LocalPlayer.Character
+                local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+                
+                if rootPart then
+                    -- Busca en la carpeta del mapa o de vehículos del juego
+                    local vehiclesFolder = workspace:FindFirstChild("Vehicles") or workspace
+                    for _, vehicle in ipairs(vehiclesFolder:GetChildren()) do
+                        if vehicle:IsA("Model") then
+                            local primaryPart = vehicle.PrimaryPart or vehicle:FindFirstChildWhichIsA("BasePart")
+                            if primaryPart then
+                                local distance = (rootPart.Position - primaryPart.Position).Magnitude
+                                -- Si estás cerca del carro, forzamos la apertura de sus atributos directamente
+                                if distance < 30 then
+                                    for _, lockAttribute in ipairs(VehicleUnlockConfig.TargetAttributeNames) do
+                                        if vehicle:GetAttribute(lockAttribute) ~= nil then
+                                            vehicle:SetAttribute(lockAttribute, false)
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end)
+        end
+        task.wait(0.5) -- Ciclo de escaneo prudente en memoria
+    end
+end)
+
+print("[Block Spin] Sistema de Desbloqueo de Carros inyectado globalmente.")
